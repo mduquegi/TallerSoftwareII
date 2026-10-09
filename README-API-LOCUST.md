@@ -50,29 +50,32 @@ php artisan users:seed-mass --count=1500000 --chunk=2000
 
 El seed masivo puede tardar varios minutos según el hardware. Ajuste `MASS_USER_CHUNK_SIZE` o `--chunk` si hay errores de memoria.
 
-## Endpoints (versión entregada — sin paginación)
+## Endpoints (con paginación)
 
 Base URL: `http://HOST:PUERTO/api`
 
-Los tres GET usan `User::all()` (en `over-twenty` se filtra en memoria tras cargar todo). Devuelven un arreglo JSON con todos los registros. Con 1.5M filas provoca timeouts, 500 por memoria o respuestas enormes. **Es intencional:** parte del laboratorio es corregirlo.
+Los tres GET usan paginación en la base de datos. `per_page` acepta valores entre 1 y 200 y usa 50 por defecto. La consulta de `over-twenty` filtra por `birth_date` antes de paginar, por lo que no carga el millón y medio de filas en memoria.
 
 | Método | Ruta | Comportamiento actual |
 |--------|------|------------------------|
-| GET | `/users` | `User::all()` |
-| GET | `/users/emails` | `User::all(['id', 'email'])` |
-| GET | `/users/over-twenty` | `User::all()` + filtro en PHP por edad |
+| GET | `/users` | Listado paginado (`page`, `per_page`) |
+| GET | `/users/emails` | Listado paginado con `id` y `email` |
+| GET | `/users/over-twenty` | Filtrado por fecha y listado paginado |
 | POST | `/users/bulk` | Crea **exactamente 3** usuarios (sin cambios) |
 
 Archivo a modificar: `app/Http/Controllers/Api/UserController.php`.
 
-### Tarea API (estudiantes)
+### Ejemplos de paginación
 
-1. Sustituir `->get()` por `->paginate()` (o cursor pagination) en los tres GET.
-2. Exponer `?page=` y `?per_page=` con límites razonables (p. ej. máx. 200).
-3. Documentar en el informe el antes/después (una petición con dataset pequeño basta para demo funcional).
-4. **Después** de paginar, ejecutar Locust con el seed masivo.
+```http
+GET /api/users?page=2&per_page=50
+GET /api/users/emails?per_page=25
+GET /api/users/over-twenty?page=1&per_page=100
+```
 
-### Ejemplo GET usuarios (estado actual)
+Las respuestas de los dos primeros endpoints conservan el formato estándar de Laravel (`current_page`, `data`, `last_page`, `total`, etc.). `over-twenty` devuelve esos mismos metadatos dentro de `users` y agrega `cutoff_date`.
+
+### Ejemplo GET usuarios
 
 ```http
 GET /api/users HTTP/1.1
@@ -80,7 +83,7 @@ Host: localhost:8000
 Accept: application/json
 ```
 
-Respuesta: arreglo JSON con un objeto por usuario (todos los campos visibles del modelo, sin contraseña).
+Respuesta: objeto paginado con los usuarios de la página solicitada (sin contraseña).
 
 ### Ejemplo POST bulk (3 usuarios)
 
@@ -131,8 +134,23 @@ php artisan serve --host=0.0.0.0 --port=8000
 
 Para pruebas de carga reales, use PHP-FPM + Nginx/Apache y OPcache en un entorno dedicado, no el servidor embebido de `artisan serve`.
 
-## Tareas para estudiantes
+## Locust
 
-1. **Refactorizar la API:** paginación en los GET de `UserController`.
-2. **Locust:** implementar `locustfile.py` con escenarios de carga, estrés y capacidad. Ver `../locust/` y `../overleaf/`.
-3. **Informe:** comparar métricas API sin paginar (opcional, dataset pequeño) vs API corregida bajo carga.
+Crear un entorno virtual e instalar las dependencias:
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+El archivo `locustfile.py` valida el estado HTTP y la estructura de cada respuesta, genera correos únicos para el POST y mantiene la mezcla 5:3:2:1 entre los tres GET y el alta masiva. Las clases `LoadUser`, `StressUser` y `CapacityUser` permiten separar las ejecuciones:
+
+```bash
+locust -f locustfile.py --host=http://127.0.0.1:8000
+locust -f locustfile.py --user-classes LoadUser --headless -u 30 -r 3 -t 10m --html=report-load.html
+locust -f locustfile.py --user-classes StressUser --headless -u 200 -r 20 -t 10m --html=report-stress.html
+locust -f locustfile.py --user-classes CapacityUser --headless -u 50 -r 5 -t 60m --html=report-capacity.html
+```
+
+Los valores de usuarios, `spawn rate`, duración, host, versión de Locust y estado de la API deben quedar registrados en el informe junto con p95, RPS y tasa de errores. No se deben presentar resultados de rendimiento sin ejecutar las pruebas en el entorno elegido.
